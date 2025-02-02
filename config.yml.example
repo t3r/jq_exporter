@@ -1,0 +1,29 @@
+log_level: DEBUG
+namespace: energymanager
+
+server:
+  port: 9101
+  address: 0.0.0.0
+
+source:
+  url: https://192.168.1.44/rest/kiwigrid/wizard/devices
+  insecure: true
+
+metrics:
+  - name: power_in
+    description: Actual power from grid
+    unit: W
+    query: >-
+      .result.items[] | select(
+          .deviceModel[].deviceClass == "com.kiwigrid.devices.solarwatt.MyReservePowermeter"
+      ).tagValues .PowerIn.value
+
+
+  - name: power_out
+    description: Actual power to grid
+    unit: W
+    query: >-
+      .result.items[] | select (
+        .deviceModel[].deviceClass == "com.kiwigrid.devices.solarwatt.MyReservePowermeter"
+      ).tagValues .PowerOut.value
+
