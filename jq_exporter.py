@@ -92,12 +92,13 @@ def main(config: any) -> None:
     else:
         context = ssl.create_default_context()
 
+    scrape_interval = config.get('source', {}).get('scrape_interval', 60)
     while True:
         json = load_json_from_uri(uri, context)
         logger.debug("JSON: %s", json)
         for gauge in gauges:
             gauge.set(json)
-        time.sleep(60)
+        time.sleep(scrape_interval)
 
 
 if __name__ == '__main__':
