@@ -1,9 +1,12 @@
 #!/usr/bin/python3
 
+from contextlib import contextmanager
 import json
+import signal
 import ssl
 import sys
 import logging
+import threading
 import time
 from prometheus_client import Gauge, start_http_server
 import logging
@@ -14,6 +17,25 @@ import yaml
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class GracefulShutdown:
+    def __init__(self):
+        self.shutdown_requested = False
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        signals = {signal.SIGTERM: 'SIGTERM', signal.SIGINT: 'SIGINT'}
+        logger.warning(f"Received {signals.get(signum)} signal, initiating graceful shutdown...")
+        self.shutdown_requested = True
+
+    @contextmanager
+    def interruptible_sleep(self, duration):
+        """Sleep that can be interrupted by shutdown signal"""
+        end_time = time.time() + duration
+        while time.time() < end_time and not self.shutdown_requested:
+            time.sleep(min(0.5, end_time - time.time()))
+        yield
 
 class JsonGauge(Gauge):
     def __init__(self,
@@ -66,7 +88,7 @@ def load_json_from_uri(uri: str, context: ssl.SSLContext) -> any:
 
 def main(config: any) -> None:
     logger.setLevel(config.get('log_level', 'WARNING'))
-    # Create an SSL context that ignores certificate verification
+    shutdown = GracefulShutdown()
 
     gauges = []
     namespace = config.get('namespace', 'jq')
@@ -85,21 +107,32 @@ def main(config: any) -> None:
     logger.warning("Server started on %s:%d", server_address, server_port)
 
     uri = config.get('source', {}).get('url', 'http://localhost/')
-    logger.warning("Fetching data from %s", uri)
+    scrape_interval = config.get('source', {}).get('scrape_interval', 60)
+    logger.warning("Fetching data from %s every %d seconds", uri, scrape_interval)
 
+    # Create an SSL context that ignores certificate verification
     if config.get('source', {}).get('insecure', False):
         context = ssl._create_unverified_context()
     else:
         context = ssl.create_default_context()
 
-    scrape_interval = config.get('source', {}).get('scrape_interval', 60)
-    while True:
-        json = load_json_from_uri(uri, context)
-        logger.debug("JSON: %s", json)
-        for gauge in gauges:
-            gauge.set(json)
-        time.sleep(scrape_interval)
+    while not shutdown.shutdown_requested:
+        try:
+            json = load_json_from_uri(uri, context)
+            logger.info("Loaded JSON from %s", uri)
+            logger.debug("JSON: %s", json)
+            for gauge in gauges:
+                gauge.set(json)
 
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+
+        finally:
+            with shutdown.interruptible_sleep(scrape_interval):
+                pass
+
+    logger.warning("Shutting down gracefully...")
+    sys.exit(0)
 
 if __name__ == '__main__':
     # Read config file from command line argument, default to "config.yml"
